@@ -19,6 +19,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import math
 import datetime
 import wandb
+from utils_mamba.Mamba import model_surgery_for_mamba
 
 def set_seed(args):
     random.seed(args.seed)
@@ -32,6 +33,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model_name_or_path", default='bert-base-uncased', type=str, required=False)
+    parser.add_argument("--mamba", default='', type=str, required=False, 
+                        choices=['', 'mamba', 'mamba_BD', 'mamba_BD', 'mamba_BD_outFFN'],
+                        help='Variant of Mamba')
+    parser.add_argument("--mamba_layers", default=6, type=int, required=False,
+                        help='Number of layers to apply Mamba to, the rest will be identity functions')
+    parser.add_argument("--mamba_dstate", default=64, type=int, required=False)
     parser.add_argument("--task_name", default='lm1b', type=str, required=False)
     parser.add_argument("--lr", default=5e-4, type=float, required=False)
     parser.add_argument("--epochs", default=3, type=int, required=False)
@@ -77,10 +84,14 @@ if __name__ == '__main__':
         fitlog.commit(__file__)
         fitlog.add_hyper(args)
         fitlog.add_hyper_in_file(__file__)
+        
+        if args.mamba != "":
+            wandb_name = f"{args.mamba}_Layer{args.mamba_layers}_dstate{args.mamba_dstate}-lr_{args.lr}-numsteps_{args.num_steps}-sample_{args.sample_strategy}-schedule_{args.schedule}-hybridlambda_{args.hybrid_lambda}-wordfreqlambda_{args.word_freq_lambda}-fromscratch_{args.from_scratch}-timestep_{args.timestep}"
+        else:
+            wandb_name = f"{args.model_name_or_path}-lr_{args.lr}-seed_{args.seed}-numsteps_{args.num_steps}-sample_{args.sample_strategy}-schedule_{args.schedule}-hybridlambda_{args.hybrid_lambda}-wordfreqlambda_{args.word_freq_lambda}-fromscratch_{args.from_scratch}-timestep_{args.timestep}"
+            
+        save_path = wandb_name + "_ckpts"
 
-        save_path = f'./model_name_{args.model_name_or_path}_lr_{args.lr}_seed_{args.seed}_numsteps_{args.num_steps}_sample_{args.sample_strategy}_schedule_{args.schedule}_hybridlambda_{args.hybrid_lambda}_wordfreqlambda_{args.word_freq_lambda}_fromscratch_{args.from_scratch}_timestep_{args.timestep}_ckpts'
-    
-        wandb_name = f"{args.model_name_or_path}-lr_{args.lr}-seed_{args.seed}-numsteps_{args.num_steps}-sample_{args.sample_strategy}-schedule_{args.schedule}-hybridlambda_{args.hybrid_lambda}-wordfreqlambda_{args.word_freq_lambda}-fromscratch_{args.from_scratch}-timestep_{args.timestep}"
         wandb.init(
                   project="diffusion_bert", 
                   name=wandb_name, 
@@ -97,7 +108,7 @@ if __name__ == '__main__':
                   "seed": args.seed,
                   "timestep": args.timestep,
                   })
-    
+        
     if args.model_name_or_path in ['bert-base-uncased', 'bert-large-uncased']:
         model_cls = BertForMaskedLM
         cfg_cls = BertConfig
@@ -108,6 +119,8 @@ if __name__ == '__main__':
         tok_cls = RobertaTokenizer
     else:
         raise NotImplementedError
+        
+    
 
 
     tokenizer = tok_cls.from_pretrained(args.model_name_or_path)
@@ -159,6 +172,8 @@ if __name__ == '__main__':
     else:
         model = model_cls(cfg).to(device)
         model.load_state_dict(ckpt['model'])
+
+    model = model_surgery_for_mamba(args, model).to(device)
 
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     optimizer = AdamW(model.parameters(), lr=args.lr)
@@ -244,7 +259,10 @@ if __name__ == '__main__':
         if not os.path.exists(save_path):
             os.makedirs(save_path, exist_ok=True)
         best_dev_elbo = float('inf')
-
+    
+        
+        
+        
     train_loss = .0
     nan_count = 0
     loss_list = [torch.tensor(0., device=device) for _ in range(dist.get_world_size())]
@@ -284,6 +302,7 @@ if __name__ == '__main__':
                     wandb.log({"train loss": train_loss / args.logging_steps, 
                                "train step": i})
                     train_loss = .0
+                    
 
             if i % args.eval_steps == args.eval_steps - 1:
                 nan_count_in_dev = 0
@@ -326,11 +345,10 @@ if __name__ == '__main__':
                         for name in dev_metrics.keys():
                             dev_metrics[name] /= len(dev_data)
                             fitlog.add_metric(dev_metrics[name], name=name, step=i)
-                        
-                        wandb.log({"val elbo": dev_metrics["elbo"], 
-                                    "val elbo_in_bits_per_dim": dev_metrics["elbo_in_bits_per_dim"],
-                                    "train step": i})
-
+                            
+                            wandb.log({"val elbo": dev_metrics["elbo"], 
+                                       "val elbo_in_bits_per_dim": dev_metrics["elbo_in_bits_per_dim"],
+                                       "train step": i})
 
                         if dev_metrics['elbo_in_bits_per_dim'] <= best_dev_elbo:
                             best_dev_elbo = dev_metrics['elbo_in_bits_per_dim']
@@ -341,6 +359,4 @@ if __name__ == '__main__':
                                 'warmup_scheduler': warmup_scheduler.state_dict(),
                             }, f'./{save_path}/best({i}).th')
                     model.train()
-
     wandb.finish()
-

@@ -1,4 +1,4 @@
-from models.modeling_bert import BertOutput
+from models.modeling_bert import BertOutput, BertIntermediate
 from typing import List, Optional, Tuple
 from torch import nn
 from mamba_ssm import Mamba
@@ -49,6 +49,7 @@ class MambaBlock(nn.Module):
 
             print(f"Using Mamba with Additioinal FFN Layer")
 
+            self.intermediate = BertIntermediate(config)
             self.output = BertOutput(config)
 
     
@@ -70,6 +71,7 @@ class MambaBlock(nn.Module):
             out = self.mamba(hidden_states,)
                 
         if "outFFN" in self.args_mamba:
+            out = self.intermediate(out) 
             out = self.output(out, hidden_states)
 
         return (out, )

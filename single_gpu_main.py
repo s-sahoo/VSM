@@ -346,7 +346,7 @@ for epoch in range(args.epochs):
                     )
 
                     for name in dev_metrics.keys():
-                        m = batch_dev_metrics[name].squeeze()
+                        m = batch_dev_metrics[name]
                         temp = sum(m)
                         if not torch.isnan(temp):
                             dev_metrics[name] += temp
@@ -371,3 +371,4 @@ for epoch in range(args.epochs):
                         'warmup_scheduler': warmup_scheduler.state_dict(),
                     }, f'./{save_path}/best({i}).th')
                 model.train()
+    wandb.finish()
